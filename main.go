@@ -165,7 +165,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			// 1. Fixed Heading Block Schema
 			blocks = append(blocks, map[string]interface{}{
 				"type":  "heading",
-				"level": 1, // Fix: Changed key name from 'size' to 'level'
+				"size": 1, // Fix: Changed key name from 'size' to 'level'
 				"text": map[string]interface{}{
 					"type": "text",
 					"text": article.Headline, // Fix: Flat direct text string assignment
@@ -189,20 +189,19 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			}
 
 			if len(uniqueImages) > 0 {
-				var photos []map[string]interface{}
-				for idx, img := range uniqueImages {
-					if idx >= 10 {
-						break
-					}
-					photos = append(photos, map[string]interface{}{
-						"url":    img,
-						"width":  1024,
-						"height": 576,
-					})
+				photoBlocks := []map[string]interface{}{}
+				for _, img := range uniqueImages {
+				    photoBlocks = append(photoBlocks, map[string]interface{}{
+				        "type": "photo",
+				        "photo": map[string]interface{}{
+				            "url": img,
+				        },
+				    })
 				}
+
 				blocks = append(blocks, map[string]interface{}{
-					"type":   "slideshow",
-					"photos": photos,
+				    "type": "slideshow",
+				    "blocks": photoBlocks,
 				})
 			}
 
