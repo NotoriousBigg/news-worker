@@ -42,6 +42,20 @@ type FullArticle struct {
 	Images  []string `json:"images"`
 }
 
+// RichTextEntity represents a Telegram-style text entity with byte offsets
+type RichTextEntity struct {
+	Type   string `json:"type"`
+	Offset int    `json:"offset"`
+	Length int    `json:"length"`
+	URL    string `json:"url,omitempty"`
+}
+
+// RichTextResult holds plain text and its entities
+type RichTextResult struct {
+	Text     string           `json:"text"`
+	Entities []RichTextEntity `json:"entities"`
+}
+
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
@@ -85,14 +99,16 @@ func markPublished(collection *mongo.Collection, id string) {
 	}
 }
 
-func htmlToRichText(htmlText string) interface{} {
+var strayTagPattern = regexp.MustCompile(`<[^>]*>`)
+
+// htmlToRichText converts HTML to plain text with Telegram-style entities
+func htmlToRichText(htmlText string) RichTextResult {
 	doc, err := html.Parse(strings.NewReader("<div>" + htmlText + "</div>"))
 	if err != nil {
-		return htmlText
+		return RichTextResult{Text: htmlText}
 	}
 
 	var root *html.Node
-
 	var find func(*html.Node)
 	find = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "div" {
@@ -106,135 +122,156 @@ func htmlToRichText(htmlText string) interface{} {
 			}
 		}
 	}
-
 	find(doc)
 
 	if root == nil {
-		return htmlText
+		return RichTextResult{Text: htmlText}
 	}
 
-	rich := convertChildren(root)
+	var textBuilder strings.Builder
+	var entities []RichTextEntity
 
-	if len(rich) == 1 {
-		return rich[0]
+	extractTextAndEntities(root, &textBuilder, &entities, nil)
+
+	text := textBuilder.String()
+	
+	// Clean up any remaining raw HTML tags that weren't parsed
+	text = strayTagPattern.ReplaceAllString(text, "")
+	
+	return RichTextResult{
+		Text:     text,
+		Entities: entities,
 	}
-
-	return rich
 }
 
-func convertChildren(node *html.Node) []interface{} {
-	var out []interface{}
-
-	for c := node.FirstChild; c != nil; c = c.NextSibling {
-		out = append(out, convertNode(c)...)
-	}
-
-	return out
+// entityStack tracks active formatting entities
+type entityStack struct {
+	Type   string
+	Offset int
+	URL    string
+	Next   *entityStack
 }
 
-var strayTagPattern = regexp.MustCompile(`<[^>]*>`)
+func pushStack(stack *entityStack, entityType string, url string) *entityStack {
+	return &entityStack{
+		Type:   entityType,
+		Offset: -1, // Will be set when text starts
+		URL:    url,
+		Next:   stack,
+	}
+}
 
-func convertNode(node *html.Node) []interface{} {
-
+func extractTextAndEntities(node *html.Node, builder *strings.Builder, entities *[]RichTextEntity, stack *entityStack) {
 	switch node.Type {
-
 	case html.TextNode:
-
 		if node.Data == "" {
-			return nil
+			return
 		}
-		text := strayTagPattern.ReplaceAllString(node.Data, "")
-		if text == "" {
-			return nil
+		// Clean stray tags from text nodes
+		cleanText := strayTagPattern.ReplaceAllString(node.Data, "")
+		if cleanText == "" {
+			return
 		}
 
-		return []interface{}{text}
+		// Set offsets for entities in stack that haven't started yet
+		currentOffset := builder.Len()
+		s := stack
+		for s != nil {
+			if s.Offset == -1 {
+				s.Offset = currentOffset
+			}
+			s = s.Next
+		}
+
+		builder.WriteString(cleanText)
 
 	case html.ElementNode:
-
 		switch node.Data {
-
+		case "br":
+			builder.WriteString("\n")
+			return
+		case "span", "div", "figure", "figcaption":
+			// Ignore tag, process children with same stack
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, stack)
+			}
+			return
 		case "strong", "b":
-
-			return []interface{}{
-				map[string]interface{}{
-					"type": "bold",
-					"text": convertChildren(node),
-				},
+			newStack := pushStack(stack, "bold", "")
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
 			}
-
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		case "em", "i":
-
-			return []interface{}{
-				map[string]interface{}{
-					"type": "italic",
-					"text": convertChildren(node),
-				},
+			newStack := pushStack(stack, "italic", "")
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
 			}
-
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		case "u":
-
-			return []interface{}{
-				map[string]interface{}{
-					"type": "underline",
-					"text": convertChildren(node),
-				},
+			newStack := pushStack(stack, "underline", "")
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
 			}
-
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		case "s", "strike":
-
-			return []interface{}{
-				map[string]interface{}{
-					"type": "strikethrough",
-					"text": convertChildren(node),
-				},
+			newStack := pushStack(stack, "strikethrough", "")
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
 			}
-
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		case "code":
-
-			return []interface{}{
-				map[string]interface{}{
-					"type": "code",
-					"text": convertChildren(node),
-				},
+			newStack := pushStack(stack, "code", "")
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
 			}
-
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		case "a":
-
 			var href string
-
 			for _, attr := range node.Attr {
 				if attr.Key == "href" {
 					href = attr.Val
 					break
 				}
 			}
-
-			return []interface{}{
-				map[string]interface{}{
-					"type": "url",
-					"text": convertChildren(node),
-					"url":  href,
-				},
+			newStack := pushStack(stack, "url", href)
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
 			}
-
-		case "br":
-
-			return []interface{}{"\n"}
-
-		case "span", "div", "figure", "figcaption":
-		    // Ignore the tag itself but keep its children.
-		    return convertChildren(node)
-
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		default:
-
-			return convertChildren(node)
+			// Unknown tag: ignore tag but process children
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, stack)
+			}
+			return
 		}
 	}
-
-	return nil
 }
 
+func closeEntity(endOffset int, stack *entityStack, entities *[]RichTextEntity) {
+	if stack == nil || stack.Offset == -1 {
+		return
+	}
+	length := endOffset - stack.Offset
+	if length > 0 {
+		entity := RichTextEntity{
+			Type:   stack.Type,
+			Offset: stack.Offset,
+			Length: length,
+		}
+		if stack.Type == "url" {
+			entity.URL = stack.URL
+		}
+		*entities = append(*entities, entity)
+	}
+}
 
 func processTracker(collection *mongo.Collection, token, chatID string) {
 	resp, err := httpClient.Get("https://api.kresswell.me/kenyans/tracker")
@@ -250,7 +287,6 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 		return
 	}
 
-	// Read backwards from end of slice to preserve chronological stream order
 	for i := len(data) - 1; i >= 0; i-- {
 		day := data[i]
 		for j := len(day.News) - 1; j >= 0; j-- {
@@ -272,7 +308,7 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 
 				if sendJSON(tgURL, payload) {
 					markPublished(collection, newsID)
-					time.Sleep(3100 * time.Millisecond) // Bound rate metrics cleanly
+					time.Sleep(3100 * time.Millisecond)
 				}
 			}
 		}
@@ -322,10 +358,12 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		var blocks []map[string]interface{}
 
 		// Heading
+		richHeadline := htmlToRichText(article.Headline)
 		blocks = append(blocks, map[string]interface{}{
-			"type": "heading",
-			"size": 1,
-			"text": htmlToRichText(article.Headline),
+			"type":     "heading",
+			"size":     1,
+			"text":     richHeadline.Text,
+			"entities": richHeadline.Entities,
 		})
 
 		// Images
@@ -336,9 +374,7 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			if url == "" || seen[url] {
 				return
 			}
-
 			seen[url] = true
-
 			photoBlocks = append(photoBlocks, map[string]interface{}{
 				"type": "photo",
 				"photo": map[string]interface{}{
@@ -354,6 +390,7 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		}
 
 		if len(photoBlocks) > 0 {
+			// Uncomment if you want slideshow
 			// blocks = append(blocks, map[string]interface{}{
 			// 	"type":   "slideshow",
 			// 	"blocks": photoBlocks,
@@ -364,33 +401,34 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		paragraphs := strings.Split(fullArticle.Content, "\n\n")
 		
 		for _, para := range paragraphs {
-		
 			para = strings.TrimSpace(para)
-		
 			if para == "" {
 				continue
 			}
 		
+			richPara := htmlToRichText(para)
 			blocks = append(blocks, map[string]interface{}{
-				"type": "paragraph",
-				"text": htmlToRichText(para),
+				"type":     "paragraph",
+				"text":     richPara.Text,
+				"entities": richPara.Entities,
 			})
 		}
 
-		// Footer
-		blocks = append(blocks, map[string]interface{}{
-			"type": "footer",
-			"text": []interface{}{
-				"📰 Originally published on ",
-				map[string]interface{}{
-					"type": "url",
-					"text": "Kenyans.co.ke",
-					"url": fmt.Sprintf(
-						"https://www.kenyans.co.ke/news/%s",
-						slug,
-					),
-				},
+		// Footer - build as rich text with URL entity
+		footerText := "📰 Originally published on Kenyans.co.ke"
+		footerEntities := []RichTextEntity{
+			{
+				Type:   "url",
+				Offset: 29, // Length of "📰 Originally published on "
+				Length: 13, // Length of "Kenyans.co.ke"
+				URL:    fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
 			},
+		}
+
+		blocks = append(blocks, map[string]interface{}{
+			"type":     "footer",
+			"text":     footerText,
+			"entities": footerEntities,
 		})
 
 		reqBody := map[string]interface{}{
@@ -416,7 +454,6 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 	}
 }
 
-// Utility wrapper updated to trace transmission state indicators safely
 func sendJSON(url string, payload interface{}) bool {
 	body, _ := json.Marshal(payload)
 	resp, err := httpClient.Post(url, "application/json", bytes.NewBuffer(body))
