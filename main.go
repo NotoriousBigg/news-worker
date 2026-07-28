@@ -208,48 +208,79 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			// 3. Fixed Paragraph Segment Elements Mapping Loop
 			paragraphs := strings.Split(fullArticle.Content, "\n\n")
 			for _, para := range paragraphs {
-				para = strings.TrimSpace(para)
-				if para == "" {
-					continue
-				}
-
-				matches := linkRegex.FindAllStringSubmatchIndex(para, -1)
-				var segments []map[string]interface{}
-				lastIndex := 0
-
+			    para = strings.TrimSpace(para)
+			    if para == "" {
+			        continue
+			    }
+			
+			    matches := linkRegex.FindAllStringSubmatchIndex(para, -1)
+			    var segments []map[string]interface{}
+			    lastIndex := 0
+			
 				for _, match := range matches {
+					// Plain text segment before the link
 					if match[0] > lastIndex {
 						segments = append(segments, map[string]interface{}{
+							"type": "text", // CRITICAL FIX: Explicit type required by Telegram
 							"text": para[lastIndex:match[0]],
 						})
 					}
+					// Hyperlink text segment
 					segments = append(segments, map[string]interface{}{
-						"type": "url",
-						"text": para[match[4]:match[5]], // Direct title string segment
+						"type": "url", // Correctly typed link chunk
+						"text": para[match[4]:match[5]],
 						"url":  para[match[2]:match[3]],
 					})
 					lastIndex = match[1]
 				}
-
+			
+				// Plain text segment after the last link
 				if lastIndex < len(para) {
 					segments = append(segments, map[string]interface{}{
+						"type": "text", // CRITICAL FIX: Explicit type required by Telegram
 						"text": para[lastIndex:],
 					})
 				}
-
-				// Build structural block mapping configurations using corrected conditional AST syntax
-				paragraphBlock := map[string]interface{}{"type": "paragraph"}
-				if len(segments) > 0 {
-					paragraphBlock["text"] = map[string]interface{}{
-						"segments": segments,
-					}
-				} else {
-					paragraphBlock["text"] = map[string]interface{}{
-						"text": para,
-					}
-				}
-				blocks = append(blocks, paragraphBlock)
+			
+			    // Build structural block mapping configurations using corrected conditional AST syntax
+			    paragraphBlock := map[string]interface{}{"type": "paragraph"}
+			    
+			    // Always wrap paragraph text under the expected structure
+			    if len(segments) > 0 {
+			        paragraphBlock["text"] = map[string]interface{}{
+			            "segments": segments,
+			        }
+			    } else {
+			        // If a paragraph contains zero links, we must still format it as a typed standard text segment array to maintain structure uniformity
+			        paragraphBlock["text"] = map[string]interface{}{
+			            "segments": []map[string]interface{}{
+			                {
+			                    "type": "text", // CRITICAL FIX: Keeps text blocks valid
+			                    "text": para,
+			                },
+			            },
+			        }
+			    }
+			    blocks = append(blocks, paragraphBlock)
 			}
+			
+			// 4. Clean Action Footer Block Setup
+			blocks = append(blocks, map[string]interface{}{
+			    "type": "paragraph",
+			    "text": map[string]interface{}{
+			        "segments": []map[string]interface{}{
+			            {
+			                "type": "text", // CRITICAL FIX
+			                "text": "📰 Originally published on ",
+			            },
+			            {
+			                "type": "url",
+			                "text": "Kenyans.co.ke",
+			                "url":  fmt.Sprintf("https://kenyans.co.ke", slug),
+			            },
+			        },
+			    },
+			})
 
 			// 4. Clean Action Footer Block Setup
 			blocks = append(blocks, map[string]interface{}{
