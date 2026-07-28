@@ -42,7 +42,7 @@ type FullArticle struct {
 	Images  []string `json:"images"`
 }
 
-// RichTextEntity represents a Telegram-style text entity with byte offsets
+// RichTextEntity represents a Telegram MessageEntity
 type RichTextEntity struct {
 	Type   string `json:"type"`
 	Offset int    `json:"offset"`
@@ -57,6 +57,9 @@ type RichTextResult struct {
 }
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// Telegram-supported HTML tags for parse_mode="HTML"
+var telegramHTMLTagPattern = regexp.MustCompile(`<(/?)(?!(b|strong|i|em|u|ins|s|strike|del|code|pre|a|tg-spoiler)\b)[^>]*>`)
 
 func main() {
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
@@ -99,9 +102,15 @@ func markPublished(collection *mongo.Collection, id string) {
 	}
 }
 
-var strayTagPattern = regexp.MustCompile(`<[^>]*>`)
+// stripUnsupportedHTML removes HTML tags that Telegram doesn't support in HTML parse mode
+func stripUnsupportedHTML(input string) string {
+	// First, handle <span class="tg-spoiler"> -> keep as-is
+	// Then remove all other unsupported tags
+	return telegramHTMLTagPattern.ReplaceAllString(input, "")
+}
 
-// htmlToRichText converts HTML to plain text with Telegram-style entities
+// htmlToRichText converts HTML to plain text with Telegram MessageEntity objects
+// Uses byte offsets (NOT rune offsets) for entities
 func htmlToRichText(htmlText string) RichTextResult {
 	doc, err := html.Parse(strings.NewReader("<div>" + htmlText + "</div>"))
 	if err != nil {
@@ -133,13 +142,8 @@ func htmlToRichText(htmlText string) RichTextResult {
 
 	extractTextAndEntities(root, &textBuilder, &entities, nil)
 
-	text := textBuilder.String()
-	
-	// Clean up any remaining raw HTML tags that weren't parsed
-	text = strayTagPattern.ReplaceAllString(text, "")
-	
 	return RichTextResult{
-		Text:     text,
+		Text:     textBuilder.String(),
 		Entities: entities,
 	}
 }
@@ -155,7 +159,7 @@ type entityStack struct {
 func pushStack(stack *entityStack, entityType string, url string) *entityStack {
 	return &entityStack{
 		Type:   entityType,
-		Offset: -1, // Will be set when text starts
+		Offset: -1,
 		URL:    url,
 		Next:   stack,
 	}
@@ -167,13 +171,7 @@ func extractTextAndEntities(node *html.Node, builder *strings.Builder, entities 
 		if node.Data == "" {
 			return
 		}
-		// Clean stray tags from text nodes
-		cleanText := strayTagPattern.ReplaceAllString(node.Data, "")
-		if cleanText == "" {
-			return
-		}
 
-		// Set offsets for entities in stack that haven't started yet
 		currentOffset := builder.Len()
 		s := stack
 		for s != nil {
@@ -183,15 +181,14 @@ func extractTextAndEntities(node *html.Node, builder *strings.Builder, entities 
 			s = s.Next
 		}
 
-		builder.WriteString(cleanText)
+		builder.WriteString(node.Data)
 
 	case html.ElementNode:
 		switch node.Data {
 		case "br":
 			builder.WriteString("\n")
 			return
-		case "span", "div", "figure", "figcaption":
-			// Ignore tag, process children with same stack
+		case "span", "div", "figure", "figcaption", "p", "h1", "h2", "h3", "h4", "h5", "h6":
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
 				extractTextAndEntities(c, builder, entities, stack)
 			}
@@ -210,14 +207,14 @@ func extractTextAndEntities(node *html.Node, builder *strings.Builder, entities 
 			}
 			closeEntity(builder.Len(), newStack, entities)
 			return
-		case "u":
+		case "u", "ins":
 			newStack := pushStack(stack, "underline", "")
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
 				extractTextAndEntities(c, builder, entities, newStack)
 			}
 			closeEntity(builder.Len(), newStack, entities)
 			return
-		case "s", "strike":
+		case "s", "strike", "del":
 			newStack := pushStack(stack, "strikethrough", "")
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
 				extractTextAndEntities(c, builder, entities, newStack)
@@ -231,6 +228,13 @@ func extractTextAndEntities(node *html.Node, builder *strings.Builder, entities 
 			}
 			closeEntity(builder.Len(), newStack, entities)
 			return
+		case "pre":
+			newStack := pushStack(stack, "pre", "")
+			for c := node.FirstChild; c != nil; c = c.NextSibling {
+				extractTextAndEntities(c, builder, entities, newStack)
+			}
+			closeEntity(builder.Len(), newStack, entities)
+			return
 		case "a":
 			var href string
 			for _, attr := range node.Attr {
@@ -239,14 +243,13 @@ func extractTextAndEntities(node *html.Node, builder *strings.Builder, entities 
 					break
 				}
 			}
-			newStack := pushStack(stack, "url", href)
+			newStack := pushStack(stack, "text_link", href)
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
 				extractTextAndEntities(c, builder, entities, newStack)
 			}
 			closeEntity(builder.Len(), newStack, entities)
 			return
 		default:
-			// Unknown tag: ignore tag but process children
 			for c := node.FirstChild; c != nil; c = c.NextSibling {
 				extractTextAndEntities(c, builder, entities, stack)
 			}
@@ -266,7 +269,7 @@ func closeEntity(endOffset int, stack *entityStack, entities *[]RichTextEntity) 
 			Offset: stack.Offset,
 			Length: length,
 		}
-		if stack.Type == "url" {
+		if stack.Type == "text_link" {
 			entity.URL = stack.URL
 		}
 		*entities = append(*entities, entity)
@@ -297,7 +300,11 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 
 			if !isPublished(collection, newsID) {
 				tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
-				tgText := fmt.Sprintf("🕒 <b>%s - %s</b>\n\n%s", item.Time, day.Date, item.Message)
+				
+				// FIX: Strip unsupported HTML tags from message before sending
+				cleanMessage := stripUnsupportedHTML(item.Message)
+				
+				tgText := fmt.Sprintf("🕒 <b>%s - %s</b>\n\n%s", item.Time, day.Date, cleanMessage)
 
 				payload := map[string]interface{}{
 					"chat_id":              chatID,
@@ -368,14 +375,13 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 
 		// Images
 		seen := make(map[string]bool)
-		var photoBlocks []map[string]interface{}
 
 		addPhoto := func(url string) {
 			if url == "" || seen[url] {
 				return
 			}
 			seen[url] = true
-			photoBlocks = append(photoBlocks, map[string]interface{}{
+			blocks = append(blocks, map[string]interface{}{
 				"type": "photo",
 				"photo": map[string]interface{}{
 					"url": url,
@@ -389,15 +395,7 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			addPhoto(img)
 		}
 
-		if len(photoBlocks) > 0 {
-			// Uncomment if you want slideshow
-			// blocks = append(blocks, map[string]interface{}{
-			// 	"type":   "slideshow",
-			// 	"blocks": photoBlocks,
-			// })
-		}
-
-		// Paragraphs (RichText is HTML)
+		// Paragraphs
 		paragraphs := strings.Split(fullArticle.Content, "\n\n")
 		
 		for _, para := range paragraphs {
@@ -414,13 +412,13 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			})
 		}
 
-		// Footer - build as rich text with URL entity
+		// Footer
 		footerText := "📰 Originally published on Kenyans.co.ke"
 		footerEntities := []RichTextEntity{
 			{
-				Type:   "url",
-				Offset: 29, // Length of "📰 Originally published on "
-				Length: 13, // Length of "Kenyans.co.ke"
+				Type:   "text_link",
+				Offset: 29,
+				Length: 13,
 				URL:    fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
 			},
 		}
