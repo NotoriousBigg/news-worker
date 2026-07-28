@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -60,13 +59,12 @@ func main() {
 	defer dbClient.Disconnect(context.TODO())
 
 	collection := dbClient.Database("kenyans_db").Collection("published_news")
-	linkRegex := regexp.MustCompile(`<a href="([^"]+)">([^<]+)</a>`)
 
 	log.Println("Go Worker Daemon Started...")
 
 	for {
 		processTracker(collection, telegramToken, chatID)
-		processNews(collection, telegramToken, chatID, linkRegex)
+		processNews(collection, telegramToken, chatID)
 		
 		time.Sleep(30 * time.Second)
 	}
@@ -128,7 +126,7 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 	}
 }
 
-func processNews(collection *mongo.Collection, token, chatID string, linkRegex *regexp.Regexp) {
+func processNews(collection *mongo.Collection, token, chatID string) {
 	resp, err := httpClient.Get("https://api.kresswell.me/kenyans/news")
 	if err != nil {
 		log.Printf("Failed to fetch news index: %v", err)
@@ -147,138 +145,111 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 		slug := article.Link
 		kvKey := "news-" + slug
 
-		if !isPublished(collection, kvKey) {
-			fullResp, err := httpClient.Get(fmt.Sprintf("https://api.kresswell.me/kenyans/article/%s", slug))
-			if err != nil || fullResp.StatusCode != 200 {
-				if fullResp != nil {
-					fullResp.Body.Close()
-				}
+		if isPublished(collection, kvKey) {
+			continue
+		}
+
+		fullResp, err := httpClient.Get(
+			fmt.Sprintf("https://api.kresswell.me/kenyans/article/%s", slug),
+		)
+		if err != nil || fullResp.StatusCode != http.StatusOK {
+			if fullResp != nil {
+				fullResp.Body.Close()
+			}
+			continue
+		}
+
+		var fullArticle FullArticle
+		if err := json.NewDecoder(fullResp.Body).Decode(&fullArticle); err != nil {
+			fullResp.Body.Close()
+			continue
+		}
+		fullResp.Body.Close()
+
+		var blocks []map[string]interface{}
+
+		// Heading
+		blocks = append(blocks, map[string]interface{}{
+			"type": "heading",
+			"size": 1,
+			"text": article.Headline,
+		})
+
+		// Images
+		seen := make(map[string]bool)
+		var photoBlocks []map[string]interface{}
+
+		addPhoto := func(url string) {
+			if url == "" || seen[url] {
+				return
+			}
+
+			seen[url] = true
+
+			photoBlocks = append(photoBlocks, map[string]interface{}{
+				"type": "photo",
+				"photo": map[string]interface{}{
+					"url": url,
+				},
+			})
+		}
+
+		addPhoto(article.Thumbnail)
+
+		for _, img := range fullArticle.Images {
+			addPhoto(img)
+		}
+
+		if len(photoBlocks) > 0 {
+			blocks = append(blocks, map[string]interface{}{
+				"type":   "slideshow",
+				"blocks": photoBlocks,
+			})
+		}
+
+		// Paragraphs (RichText is HTML)
+		paragraphs := strings.Split(fullArticle.Content, "\n\n")
+
+		for _, para := range paragraphs {
+			para = strings.TrimSpace(para)
+
+			if para == "" {
 				continue
 			}
 
-			var fullArticle FullArticle
-			json.NewDecoder(fullResp.Body).Decode(&fullArticle)
-			fullResp.Body.Close()
-
-			var blocks []map[string]interface{}
-
-			// 1. Fixed Heading Block Schema
 			blocks = append(blocks, map[string]interface{}{
-				"type":  "heading",
-				"size": 1, // Fix: Changed key name from 'size' to 'level'
-				"text": article.Headline,
+				"type": "paragraph",
+				"text": para,
 			})
+		}
 
-			// 2. Swappable Slideshow Grid Layout block
-			uniqueImages := []string{}
-			seen := map[string]bool{}
+		// Footer
+		blocks = append(blocks, map[string]interface{}{
+			"type": "footer",
+			"text": fmt.Sprintf(
+				`📰 Originally published on <a href="https://www.kenyans.co.ke/news/%s">Kenyans.co.ke</a>`,
+				slug,
+			),
+		})
 
-			if article.Thumbnail != "" {
-				uniqueImages = append(uniqueImages, article.Thumbnail)
-				seen[article.Thumbnail] = true
-			}
+		reqBody := map[string]interface{}{
+			"chat_id": chatID,
+			"rich_message": map[string]interface{}{
+				"blocks": blocks,
+			},
+		}
 
-			for _, img := range fullArticle.Images {
-				if img != "" && !seen[img] {
-					uniqueImages = append(uniqueImages, img)
-					seen[img] = true
-				}
-			}
+		pretty, _ := json.MarshalIndent(reqBody, "", "  ")
+		log.Println(string(pretty))
 
-			if len(uniqueImages) > 0 {
-				photoBlocks := []map[string]interface{}{}
-				for _, img := range uniqueImages {
-				    photoBlocks = append(photoBlocks, map[string]interface{}{
-				        "type": "photo",
-				        "photo": map[string]interface{}{
-				            "url": img,
-				        },
-				    })
-				}
+		tgURL := fmt.Sprintf(
+			"https://api.telegram.org/bot%s/sendRichMessage",
+			token,
+		)
 
-				blocks = append(blocks, map[string]interface{}{
-				    "type": "slideshow",
-				    "blocks": photoBlocks,
-				})
-			}
-
-			// 3. Fixed Paragraph Segment Elements Mapping Loop
-			paragraphs := strings.Split(fullArticle.Content, "\n\n")
-			for _, para := range paragraphs {
-			    para = strings.TrimSpace(para)
-			    if para == "" {
-			        continue
-			    }
-			
-			    matches := linkRegex.FindAllStringSubmatchIndex(para, -1)
-			    var segments []map[string]interface{}
-			    lastIndex := 0
-			
-				for _, match := range matches {
-					// Plain text segment before the link
-					if match[0] > lastIndex {
-						segments = append(segments, map[string]interface{}{
-							"type": "text", // CRITICAL FIX: Explicit type required by Telegram
-							"text": para[lastIndex:match[0]],
-						})
-					}
-					// Hyperlink text segment
-					segments = append(segments, map[string]interface{}{
-						"type": "url", // Correctly typed link chunk
-						"text": para[match[4]:match[5]],
-						"url":  para[match[2]:match[3]],
-					})
-					lastIndex = match[1]
-				}
-			
-				// Plain text segment after the last link
-				if lastIndex < len(para) {
-					segments = append(segments, map[string]interface{}{
-						"type": "paragraph", // CRITICAL FIX: Explicit type required by Telegram
-						"text": para[lastIndex:],
-					})
-				}
-			
-			    // Build structural block mapping configurations using corrected conditional AST syntax
-			    paragraphBlock := map[string]interface{}{"type": "paragraph"}
-			    
-			    // Always wrap paragraph text under the expected structure
-			    if len(segments) > 0 {
-			        paragraphBlock["text"] = map[string]interface{}{
-			            "segments": segments,
-			        }
-			    } else {
-			        // If a paragraph contains zero links, we must still format it as a typed standard text segment array to maintain structure uniformity
-			        paragraphBlock["text"] = para
-			    }
-			    blocks = append(blocks, paragraphBlock)
-			}
-
-
-			blocks = append(blocks, map[string]interface{}{
-			    "type": "footer",
-			    "text": fmt.Sprintf(
-			        `📰 Originally published on <a href="https://www.kenyans.co.ke/news/%s">Kenyans.co.ke</a>`,
-			        slug,
-			    ),
-			})
-
-			reqBody := map[string]interface{}{
-				"chat_id": chatID,
-				"rich_message": map[string]interface{}{
-					"blocks": blocks,
-				},
-			}
-
-			tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendRichMessage", token)
-			
-			// Fix: Verify transmission state before writing into MongoDB collection
-			pretty, _ := json.MarshalIndent(reqBody, "", "  ")
-			log.Println(string(pretty))
-			if sendJSON(tgURL, reqBody) {
-				markPublished(collection, kvKey)
-				time.Sleep(3100 * time.Millisecond)
-			}
+		if sendJSON(tgURL, reqBody) {
+			markPublished(collection, kvKey)
+			time.Sleep(3100 * time.Millisecond)
 		}
 	}
 }
