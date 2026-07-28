@@ -19,7 +19,6 @@ import (
 )
 
 // --- API Response Structs ---
-
 type TrackerItem struct {
 	Time    string `json:"time"`
 	Message string `json:"message"`
@@ -43,7 +42,6 @@ type FullArticle struct {
 	Images  []string `json:"images"`
 }
 
-// --- Global Client ---
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
@@ -55,7 +53,6 @@ func main() {
 		log.Fatal("Missing required environment variables: TELEGRAM_TOKEN, CHAT_ID, MONGO_URI")
 	}
 
-	// Connect to MongoDB
 	clientOptions := options.Client().ApplyURI(mongoURI)
 	dbClient, err := mongo.Connect(context.TODO(), clientOptions)
 	if err != nil {
@@ -72,7 +69,6 @@ func main() {
 		processTracker(collection, telegramToken, chatID)
 		processNews(collection, telegramToken, chatID, linkRegex)
 		
-		// Poll every 30 seconds
 		time.Sleep(30 * time.Second)
 	}
 }
@@ -125,7 +121,7 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 
 				sendJSON(tgURL, payload)
 				markPublished(collection, newsID)
-				time.Sleep(3100 * time.Millisecond) // Respect Telegram 20 msg/min limit
+				time.Sleep(3100 * time.Millisecond) // Respect 20 msg/min limit
 			}
 		}
 	}
@@ -165,12 +161,14 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			// 1. Heading Block
 			blocks = append(blocks, map[string]interface{}{
 				"type": "heading",
+				"size": 1,
 				"text": map[string]interface{}{
+					"type": "plain", // Telegram requires explicit types for RichText 
 					"text": article.Headline,
 				},
 			})
 
-			// 2. Slideshow Block (Deduplicate and map to child photo blocks)
+			// 2. Slideshow Block
 			uniqueImages := []string{}
 			seen := map[string]bool{}
 
@@ -187,19 +185,20 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			}
 
 			if len(uniqueImages) > 0 {
-				var photoBlocks []map[string]interface{}
+				var photos []map[string]interface{}
 				for idx, img := range uniqueImages {
 					if idx >= 10 {
 						break
 					}
-					photoBlocks = append(photoBlocks, map[string]interface{}{
-						"type":  "photo",
-						"photo": img,
+					photos = append(photos, map[string]interface{}{
+						"url":    img,
+						"width":  1024,
+						"height": 576,
 					})
 				}
 				blocks = append(blocks, map[string]interface{}{
 					"type":   "slideshow",
-					"blocks": photoBlocks,
+					"photos": photos,
 				})
 			}
 
@@ -212,42 +211,50 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				}
 
 				matches := linkRegex.FindAllStringSubmatchIndex(para, -1)
-				var segments []map[string]interface{}
+				var texts []map[string]interface{}
 				lastIndex := 0
 
 				for _, match := range matches {
+					// Plain text before the link
 					if match[0] > lastIndex {
-						segments = append(segments, map[string]interface{}{
+						texts = append(texts, map[string]interface{}{
+							"type": "plain",
 							"text": para[lastIndex:match[0]],
 						})
 					}
-					segments = append(segments, map[string]interface{}{
+					// The clickable URL (wraps another RichText entity inside)
+					texts = append(texts, map[string]interface{}{
 						"type": "url",
 						"url":  para[match[2]:match[3]],
-						"text": para[match[4]:match[5]],
+						"text": map[string]interface{}{
+							"type": "plain",
+							"text": para[match[4]:match[5]],
+						},
 					})
 					lastIndex = match[1]
 				}
 
+				// Remaining plain text after the last link
 				if lastIndex < len(para) {
-					segments = append(segments, map[string]interface{}{
+					texts = append(texts, map[string]interface{}{
+						"type": "plain",
 						"text": para[lastIndex:],
 					})
 				}
 
-				if len(segments) > 0 {
+				// Concatenate if mixed content, otherwise send as a single entity
+				if len(texts) > 1 {
 					blocks = append(blocks, map[string]interface{}{
 						"type": "paragraph",
 						"text": map[string]interface{}{
-							"segments": segments,
+							"type":  "concat",
+							"texts": texts,
 						},
 					})
-				} else {
+				} else if len(texts) == 1 {
 					blocks = append(blocks, map[string]interface{}{
 						"type": "paragraph",
-						"text": map[string]interface{}{
-							"text": para,
-						},
+						"text": texts[0],
 					})
 				}
 			}
@@ -256,12 +263,19 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			blocks = append(blocks, map[string]interface{}{
 				"type": "paragraph",
 				"text": map[string]interface{}{
-					"segments": []map[string]interface{}{
-						{"text": "📰 Originally published on "},
+					"type": "concat",
+					"texts": []map[string]interface{}{
+						{
+							"type": "plain",
+							"text": "📰 Originally published on ",
+						},
 						{
 							"type": "url",
-							"text": "Kenyans.co.ke",
 							"url":  fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
+							"text": map[string]interface{}{
+								"type": "plain",
+								"text": "Kenyans.co.ke",
+							},
 						},
 					},
 				},
