@@ -201,10 +201,10 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		}
 
 		if len(photoBlocks) > 0 {
-			blocks = append(blocks, map[string]interface{}{
-				"type":   "slideshow",
-				"blocks": photoBlocks,
-			})
+			// blocks = append(blocks, map[string]interface{}{
+			// 	"type":   "slideshow",
+			// 	"blocks": photoBlocks,
+			// })
 		}
 
 		// Paragraphs (RichText is HTML)
