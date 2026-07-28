@@ -287,7 +287,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				"type": "paragraph",
 				"text": map[string]interface{}{
 					"segments": []map[string]interface{}{
-						{"text": "📰 Originally published on "},
+						{"type": "text", "text": "📰 Originally published on "},
 						{
 							"type": "url",
 							"text": "Kenyans.co.ke",
