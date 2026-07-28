@@ -167,6 +167,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				"type":  "heading",
 				"level": 1, // Fix: Changed key name from 'size' to 'level'
 				"text": map[string]interface{}{
+					"type": "text",
 					"text": article.Headline, // Fix: Flat direct text string assignment
 				},
 			})
@@ -276,7 +277,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			            {
 			                "type": "url",
 			                "text": "Kenyans.co.ke",
-			                "url":  fmt.Sprintf("https://kenyans.co.ke", slug),
+			                "url": fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
 			            },
 			        },
 			    },
@@ -307,6 +308,8 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendRichMessage", token)
 			
 			// Fix: Verify transmission state before writing into MongoDB collection
+			pretty, _ := json.MarshalIndent(reqBody, "", "  ")
+			log.Println(string(pretty))
 			if sendJSON(tgURL, reqBody) {
 				markPublished(collection, kvKey)
 				time.Sleep(3100 * time.Millisecond)
