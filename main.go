@@ -18,7 +18,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// --- API Response Structs ---
 type TrackerItem struct {
 	Time    string `json:"time"`
 	Message string `json:"message"`
@@ -100,6 +99,7 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 		return
 	}
 
+	// Read backwards from end of slice to preserve chronological stream order
 	for i := len(data) - 1; i >= 0; i-- {
 		day := data[i]
 		for j := len(day.News) - 1; j >= 0; j-- {
@@ -119,9 +119,10 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 					"link_preview_options": map[string]bool{"is_disabled": true},
 				}
 
-				sendJSON(tgURL, payload)
-				markPublished(collection, newsID)
-				time.Sleep(3100 * time.Millisecond) // Respect 20 msg/min limit
+				if sendJSON(tgURL, payload) {
+					markPublished(collection, newsID)
+					time.Sleep(3100 * time.Millisecond) // Bound rate metrics cleanly
+				}
 			}
 		}
 	}
@@ -130,7 +131,7 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 func processNews(collection *mongo.Collection, token, chatID string, linkRegex *regexp.Regexp) {
 	resp, err := httpClient.Get("https://api.kresswell.me/kenyans/news")
 	if err != nil {
-		log.Printf("Failed to fetch news: %v", err)
+		log.Printf("Failed to fetch news index: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -149,6 +150,9 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 		if !isPublished(collection, kvKey) {
 			fullResp, err := httpClient.Get(fmt.Sprintf("https://api.kresswell.me/kenyans/article/%s", slug))
 			if err != nil || fullResp.StatusCode != 200 {
+				if fullResp != nil {
+					fullResp.Body.Close()
+				}
 				continue
 			}
 
@@ -158,17 +162,16 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 
 			var blocks []map[string]interface{}
 
-			// 1. Heading Block
+			// 1. Fixed Heading Block Schema
 			blocks = append(blocks, map[string]interface{}{
-				"type": "heading",
-				"size": 1,
+				"type":  "heading",
+				"level": 1, // Fix: Changed key name from 'size' to 'level'
 				"text": map[string]interface{}{
-					"type": "plain", // Telegram requires explicit types for RichText 
-					"text": article.Headline,
+					"text": article.Headline, // Fix: Flat direct text string assignment
 				},
 			})
 
-			// 2. Slideshow Block
+			// 2. Swappable Slideshow Grid Layout block
 			uniqueImages := []string{}
 			seen := map[string]bool{}
 
@@ -202,7 +205,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				})
 			}
 
-			// 3. Paragraph Blocks
+			// 3. Fixed Paragraph Segment Elements Mapping Loop
 			paragraphs := strings.Split(fullArticle.Content, "\n\n")
 			for _, para := range paragraphs {
 				para = strings.TrimSpace(para)
@@ -211,77 +214,58 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				}
 
 				matches := linkRegex.FindAllStringSubmatchIndex(para, -1)
-				var texts []map[string]interface{}
+				var segments []map[string]interface{}
 				lastIndex := 0
 
 				for _, match := range matches {
-					// Plain text before the link
 					if match[0] > lastIndex {
-						texts = append(texts, map[string]interface{}{
-							"type": "plain",
+						segments = append(segments, map[string]interface{}{
 							"text": para[lastIndex:match[0]],
 						})
 					}
-					// The clickable URL (wraps another RichText entity inside)
-					texts = append(texts, map[string]interface{}{
+					segments = append(segments, map[string]interface{}{
 						"type": "url",
+						"text": para[match[4]:match[5]], // Direct title string segment
 						"url":  para[match[2]:match[3]],
-						"text": map[string]interface{}{
-							"type": "plain",
-							"text": para[match[4]:match[5]],
-						},
 					})
 					lastIndex = match[1]
 				}
 
-				// Remaining plain text after the last link
 				if lastIndex < len(para) {
-					texts = append(texts, map[string]interface{}{
-						"type": "plain",
+					segments = append(segments, map[string]interface{}{
 						"text": para[lastIndex:],
 					})
 				}
 
-				// Concatenate if mixed content, otherwise send as a single entity
-				if len(texts) > 1 {
-					blocks = append(blocks, map[string]interface{}{
-						"type": "paragraph",
-						"text": map[string]interface{}{
-							"type":  "concat",
-							"texts": texts,
-						},
-					})
-				} else if len(texts) == 1 {
-					blocks = append(blocks, map[string]interface{}{
-						"type": "paragraph",
-						"text": texts[0],
-					})
+				// Build structural block mapping configurations using corrected conditional AST syntax
+				paragraphBlock := map[string]interface{}{"type": "paragraph"}
+				if len(segments) > 0 {
+					paragraphBlock["text"] = map[string]interface{}{
+						"segments": segments,
+					}
+				} else {
+					paragraphBlock["text"] = map[string]interface{}{
+						"text": para,
+					}
 				}
+				blocks = append(blocks, paragraphBlock)
 			}
 
-			// 4. Footer notice Block
+			// 4. Clean Action Footer Block Setup
 			blocks = append(blocks, map[string]interface{}{
 				"type": "paragraph",
 				"text": map[string]interface{}{
-					"type": "concat",
-					"texts": []map[string]interface{}{
-						{
-							"type": "plain",
-							"text": "📰 Originally published on ",
-						},
+					"segments": []map[string]interface{}{
+						{"text": "📰 Originally published on "},
 						{
 							"type": "url",
+							"text": "Kenyans.co.ke",
 							"url":  fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
-							"text": map[string]interface{}{
-								"type": "plain",
-								"text": "Kenyans.co.ke",
-							},
 						},
 					},
 				},
 			})
 
-			// Assemble Rich Message payload
 			reqBody := map[string]interface{}{
 				"chat_id": chatID,
 				"rich_message": map[string]interface{}{
@@ -290,26 +274,30 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			}
 
 			tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendRichMessage", token)
-			sendJSON(tgURL, reqBody)
-
-			markPublished(collection, kvKey)
-			time.Sleep(3100 * time.Millisecond) // Rate limit buffer
+			
+			// Fix: Verify transmission state before writing into MongoDB collection
+			if sendJSON(tgURL, reqBody) {
+				markPublished(collection, kvKey)
+				time.Sleep(3100 * time.Millisecond)
+			}
 		}
 	}
 }
 
-// Utility to send JSON payload
-func sendJSON(url string, payload interface{}) {
+// Utility wrapper updated to trace transmission state indicators safely
+func sendJSON(url string, payload interface{}) bool {
 	body, _ := json.Marshal(payload)
 	resp, err := httpClient.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		log.Printf("Request error: %v", err)
-		return
+		log.Printf("Network transport failure encountered: %v", err)
+		return false
 	}
 	defer resp.Body.Close()
 	
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("Telegram API Error: Status %d, Details: %s", resp.StatusCode, string(respBody))
+		log.Printf("Telegram Server Refused Message: Status %d, Details: %s", resp.StatusCode, string(respBody))
+		return false
 	}
+	return true
 }
