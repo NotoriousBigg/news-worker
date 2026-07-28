@@ -298,7 +298,10 @@ func sendJSON(url string, payload interface{}) {
 		return
 	}
 	defer resp.Body.Close()
+	
 	if resp.StatusCode >= 400 {
-		log.Printf("Telegram API Error: Status %d", resp.StatusCode)
+		// Read the exact error message from Telegram's response
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("Telegram API Error: Status %d, Details: %s", resp.StatusCode, string(respBody))
 	}
 }
