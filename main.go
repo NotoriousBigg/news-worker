@@ -166,9 +166,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			blocks = append(blocks, map[string]interface{}{
 				"type":  "heading",
 				"size": 1, // Fix: Changed key name from 'size' to 'level'
-				"text": map[string]interface{}{
-					"type": "text",
-					"text": article.Headline, // Fix: Flat direct text string assignment
+				"text": article.Headline, 
 				},
 			})
 
