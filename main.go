@@ -276,6 +276,12 @@ func closeEntity(endOffset int, stack *entityStack, entities *[]RichTextEntity) 
 	}
 }
 
+var unsupportedTagRegex = regexp.MustCompile(`</?(span|div|figure|figcaption|p|h[1-6]|br)\b[^>]*>`)
+
+func stripUnsupportedHTML(input string) string {
+	return unsupportedTagRegex.ReplaceAllString(input, "")
+}
+
 func processTracker(collection *mongo.Collection, token, chatID string) {
 	resp, err := httpClient.Get("https://api.kresswell.me/kenyans/tracker")
 	if err != nil {
@@ -301,7 +307,6 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 			if !isPublished(collection, newsID) {
 				tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 				
-				// FIX: Strip unsupported HTML tags from message before sending
 				cleanMessage := stripUnsupportedHTML(item.Message)
 				
 				tgText := fmt.Sprintf("🕒 <b>%s - %s</b>\n\n%s", item.Time, day.Date, cleanMessage)
