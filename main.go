@@ -234,7 +234,7 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				// Plain text segment after the last link
 				if lastIndex < len(para) {
 					segments = append(segments, map[string]interface{}{
-						"type": "text", // CRITICAL FIX: Explicit type required by Telegram
+						"type": "paragraph", // CRITICAL FIX: Explicit type required by Telegram
 						"text": para[lastIndex:],
 					})
 				}
@@ -249,49 +249,18 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			        }
 			    } else {
 			        // If a paragraph contains zero links, we must still format it as a typed standard text segment array to maintain structure uniformity
-			        paragraphBlock["text"] = map[string]interface{}{
-			            "segments": []map[string]interface{}{
-			                {
-			                    "type": "text", // CRITICAL FIX: Keeps text blocks valid
-			                    "text": para,
-			                },
-			            },
-			        }
+			        paragraphBlock["text"] = para
 			    }
 			    blocks = append(blocks, paragraphBlock)
 			}
-			
-			// 4. Clean Action Footer Block Setup
-			blocks = append(blocks, map[string]interface{}{
-			    "type": "paragraph",
-			    "text": map[string]interface{}{
-			        "segments": []map[string]interface{}{
-			            {
-			                "type": "text", // CRITICAL FIX
-			                "text": "📰 Originally published on ",
-			            },
-			            {
-			                "type": "url",
-			                "text": "Kenyans.co.ke",
-			                "url": fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
-			            },
-			        },
-			    },
-			})
 
-			// 4. Clean Action Footer Block Setup
+
 			blocks = append(blocks, map[string]interface{}{
-				"type": "paragraph",
-				"text": map[string]interface{}{
-					"segments": []map[string]interface{}{
-						{"type": "text", "text": "📰 Originally published on "},
-						{
-							"type": "url",
-							"text": "Kenyans.co.ke",
-							"url":  fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
-						},
-					},
-				},
+			    "type": "footer",
+			    "text": fmt.Sprintf(
+			        `📰 Originally published on <a href="https://www.kenyans.co.ke/news/%s">Kenyans.co.ke</a>`,
+			        slug,
+			    ),
 			})
 
 			reqBody := map[string]interface{}{
