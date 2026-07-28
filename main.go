@@ -58,8 +58,6 @@ type RichTextResult struct {
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
-// Telegram-supported HTML tags for parse_mode="HTML"
-var telegramHTMLTagPattern = regexp.MustCompile(`<(/?)(?!(b|strong|i|em|u|ins|s|strike|del|code|pre|a|tg-spoiler)\b)[^>]*>`)
 
 func main() {
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
