@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"regexp"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -131,6 +132,7 @@ func convertChildren(node *html.Node) []interface{} {
 	return out
 }
 
+var strayTagPattern = regexp.MustCompile(`<[^>]*>`)
 
 func convertNode(node *html.Node) []interface{} {
 
@@ -141,8 +143,12 @@ func convertNode(node *html.Node) []interface{} {
 		if node.Data == "" {
 			return nil
 		}
+		text := strayTagPattern.ReplaceAllString(node.Data, "")
+		if text == "" {
+			return nil
+		}
 
-		return []interface{}{node.Data}
+		return []interface{}{text}
 
 	case html.ElementNode:
 
@@ -391,6 +397,7 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			"chat_id": chatID,
 			"rich_message": map[string]interface{}{
 				"blocks": blocks,
+				"skip_entity_detection": true,
 			},
 		}
 
