@@ -102,13 +102,12 @@ func markPublished(collection *mongo.Collection, id string) {
 	}
 }
 
-// stripUnsupportedHTML removes HTML tags that Telegram doesn't support in HTML parse mode
-func stripUnsupportedHTML(input string) string {
-	// First, handle <span class="tg-spoiler"> -> keep as-is
-	// Then remove all other unsupported tags
-	return telegramHTMLTagPattern.ReplaceAllString(input, "")
-}
 
+var unsupportedTagRegex = regexp.MustCompile(`</?(span|div|figure|figcaption|p|h[1-6]|br)\b[^>]*>`)
+
+func stripUnsupportedHTML(input string) string {
+	return unsupportedTagRegex.ReplaceAllString(input, "")
+}
 // htmlToRichText converts HTML to plain text with Telegram MessageEntity objects
 // Uses byte offsets (NOT rune offsets) for entities
 func htmlToRichText(htmlText string) RichTextResult {
@@ -276,11 +275,7 @@ func closeEntity(endOffset int, stack *entityStack, entities *[]RichTextEntity) 
 	}
 }
 
-var unsupportedTagRegex = regexp.MustCompile(`</?(span|div|figure|figcaption|p|h[1-6]|br)\b[^>]*>`)
 
-func stripUnsupportedHTML(input string) string {
-	return unsupportedTagRegex.ReplaceAllString(input, "")
-}
 
 func processTracker(collection *mongo.Collection, token, chatID string) {
 	resp, err := httpClient.Get("https://api.kresswell.me/kenyans/tracker")
