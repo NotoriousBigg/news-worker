@@ -84,6 +84,148 @@ func markPublished(collection *mongo.Collection, id string) {
 	}
 }
 
+func htmlToRichText(htmlText string) interface{} {
+	doc, err := html.Parse(strings.NewReader("<div>" + htmlText + "</div>"))
+	if err != nil {
+		return htmlText
+	}
+
+	var root *html.Node
+
+	var find func(*html.Node)
+	find = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "div" {
+			root = n
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			find(c)
+			if root != nil {
+				return
+			}
+		}
+	}
+
+	find(doc)
+
+	if root == nil {
+		return htmlText
+	}
+
+	rich := convertChildren(root)
+
+	if len(rich) == 1 {
+		return rich[0]
+	}
+
+	return rich
+}
+
+func convertChildren(node *html.Node) []interface{} {
+	var out []interface{}
+
+	for c := node.FirstChild; c != nil; c = c.NextSibling {
+		out = append(out, convertNode(c)...)
+	}
+
+	return out
+}
+
+
+func convertNode(node *html.Node) []interface{} {
+
+	switch node.Type {
+
+	case html.TextNode:
+
+		if node.Data == "" {
+			return nil
+		}
+
+		return []interface{}{node.Data}
+
+	case html.ElementNode:
+
+		switch node.Data {
+
+		case "strong", "b":
+
+			return []interface{}{
+				map[string]interface{}{
+					"type": "bold",
+					"text": convertChildren(node),
+				},
+			}
+
+		case "em", "i":
+
+			return []interface{}{
+				map[string]interface{}{
+					"type": "italic",
+					"text": convertChildren(node),
+				},
+			}
+
+		case "u":
+
+			return []interface{}{
+				map[string]interface{}{
+					"type": "underline",
+					"text": convertChildren(node),
+				},
+			}
+
+		case "s", "strike":
+
+			return []interface{}{
+				map[string]interface{}{
+					"type": "strikethrough",
+					"text": convertChildren(node),
+				},
+			}
+
+		case "code":
+
+			return []interface{}{
+				map[string]interface{}{
+					"type": "code",
+					"text": convertChildren(node),
+				},
+			}
+
+		case "a":
+
+			var href string
+
+			for _, attr := range node.Attr {
+				if attr.Key == "href" {
+					href = attr.Val
+					break
+				}
+			}
+
+			return []interface{}{
+				map[string]interface{}{
+					"type": "url",
+					"text": convertChildren(node),
+					"url":  href,
+				},
+			}
+
+		case "br":
+
+			return []interface{}{"\n"}
+
+		default:
+
+			return convertChildren(node)
+		}
+	}
+
+	return nil
+}
+
+
 func processTracker(collection *mongo.Collection, token, chatID string) {
 	resp, err := httpClient.Get("https://api.kresswell.me/kenyans/tracker")
 	if err != nil {
@@ -173,7 +315,7 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		blocks = append(blocks, map[string]interface{}{
 			"type": "heading",
 			"size": 1,
-			"text": article.Headline,
+			"text": htmlToRichText(article.Headline),
 		})
 
 		// Images
@@ -210,27 +352,35 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 
 		// Paragraphs (RichText is HTML)
 		paragraphs := strings.Split(fullArticle.Content, "\n\n")
-
+		
 		for _, para := range paragraphs {
+		
 			para = strings.TrimSpace(para)
-
+		
 			if para == "" {
 				continue
 			}
-
+		
 			blocks = append(blocks, map[string]interface{}{
 				"type": "paragraph",
-				"text": para,
+				"text": htmlToRichText(para),
 			})
 		}
 
 		// Footer
 		blocks = append(blocks, map[string]interface{}{
 			"type": "footer",
-			"text": fmt.Sprintf(
-				`📰 Originally published on <a href="https://www.kenyans.co.ke/news/%s">Kenyans.co.ke</a>`,
-				slug,
-			),
+			"text": []interface{}{
+				"📰 Originally published on ",
+				map[string]interface{}{
+					"type": "url",
+					"text": "Kenyans.co.ke",
+					"url": fmt.Sprintf(
+						"https://www.kenyans.co.ke/news/%s",
+						slug,
+					),
+				},
+			},
 		})
 
 		reqBody := map[string]interface{}{
