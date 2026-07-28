@@ -216,6 +216,10 @@ func convertNode(node *html.Node) []interface{} {
 
 			return []interface{}{"\n"}
 
+		case "span", "div", "figure", "figcaption":
+		    // Ignore the tag itself but keep its children.
+		    return convertChildren(node)
+
 		default:
 
 			return convertChildren(node)
