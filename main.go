@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -43,46 +43,13 @@ type FullArticle struct {
 	Images  []string `json:"images"`
 }
 
-// --- Telegram Rich Message Structs ---
-
-type TextSegment struct {
-	Type string `json:"type,omitempty"`
-	Text string `json:"text"`
-	URL  string `json:"url,omitempty"`
-}
-
-type BlockText struct {
-	Text     string        `json:"text,omitempty"`
-	Segments []TextSegment `json:"segments,omitempty"`
-}
-
-type Photo struct {
-	URL    string `json:"url"`
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-}
-
-type Block struct {
-	Type   string     `json:"type"`
-	Level  int        `json:"level,omitempty"`
-	Text   *BlockText `json:"text,omitempty"`
-	Photos []Photo    `json:"photos,omitempty"`
-}
-
-type SendRichMessageReq struct {
-	ChatID      string `json:"chat_id"`
-	RichMessage struct {
-		Blocks []Block `json:"blocks"`
-	} `json:"rich_message"`
-}
-
 // --- Global Client ---
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 func main() {
 	telegramToken := os.Getenv("TELEGRAM_TOKEN")
 	chatID := os.Getenv("CHAT_ID")
-	mongoURI := os.Getenv("MONGO_URI") // e.g., mongodb://mongodb:27017
+	mongoURI := os.Getenv("MONGO_URI")
 
 	if telegramToken == "" || chatID == "" || mongoURI == "" {
 		log.Fatal("Missing required environment variables: TELEGRAM_TOKEN, CHAT_ID, MONGO_URI")
@@ -158,7 +125,7 @@ func processTracker(collection *mongo.Collection, token, chatID string) {
 
 				sendJSON(tgURL, payload)
 				markPublished(collection, newsID)
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(3100 * time.Millisecond) // Respect Telegram 20 msg/min limit
 			}
 		}
 	}
@@ -193,16 +160,17 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			json.NewDecoder(fullResp.Body).Decode(&fullArticle)
 			fullResp.Body.Close()
 
-			var blocks []Block
+			var blocks []map[string]interface{}
 
-			// Heading Block
-			blocks = append(blocks, Block{
-				Type:  "heading",
-				Level: 1,
-				Text:  &BlockText{Text: article.Headline},
+			// 1. Heading Block
+			blocks = append(blocks, map[string]interface{}{
+				"type": "heading",
+				"text": map[string]interface{}{
+					"text": article.Headline,
+				},
 			})
 
-			// Slideshow Block (Deduplicate images)
+			// 2. Slideshow Block (Deduplicate and map to child photo blocks)
 			uniqueImages := []string{}
 			seen := map[string]bool{}
 
@@ -219,17 +187,23 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 			}
 
 			if len(uniqueImages) > 0 {
-				photos := []Photo{}
-				for i, img := range uniqueImages {
-					if i >= 10 { // Limit to 10
+				var photoBlocks []map[string]interface{}
+				for idx, img := range uniqueImages {
+					if idx >= 10 {
 						break
 					}
-					photos = append(photos, Photo{URL: img, Width: 1024, Height: 576})
+					photoBlocks = append(photoBlocks, map[string]interface{}{
+						"type":  "photo",
+						"photo": img,
+					})
 				}
-				blocks = append(blocks, Block{Type: "slideshow", Photos: photos})
+				blocks = append(blocks, map[string]interface{}{
+					"type":   "slideshow",
+					"blocks": photoBlocks,
+				})
 			}
 
-			// Paragraph Blocks
+			// 3. Paragraph Blocks
 			paragraphs := strings.Split(fullArticle.Content, "\n\n")
 			for _, para := range paragraphs {
 				para = strings.TrimSpace(para)
@@ -238,54 +212,74 @@ func processNews(collection *mongo.Collection, token, chatID string, linkRegex *
 				}
 
 				matches := linkRegex.FindAllStringSubmatchIndex(para, -1)
-				var segments []TextSegment
+				var segments []map[string]interface{}
 				lastIndex := 0
 
 				for _, match := range matches {
 					if match[0] > lastIndex {
-						segments = append(segments, TextSegment{Text: para[lastIndex:match[0]]})
+						segments = append(segments, map[string]interface{}{
+							"text": para[lastIndex:match[0]],
+						})
 					}
-					segments = append(segments, TextSegment{
-						Type: "url",
-						URL:  para[match[2]:match[3]],
-						Text: para[match[4]:match[5]],
+					segments = append(segments, map[string]interface{}{
+						"type": "url",
+						"url":  para[match[2]:match[3]],
+						"text": para[match[4]:match[5]],
 					})
 					lastIndex = match[1]
 				}
 
 				if lastIndex < len(para) {
-					segments = append(segments, TextSegment{Text: para[lastIndex:]})
+					segments = append(segments, map[string]interface{}{
+						"text": para[lastIndex:],
+					})
 				}
 
 				if len(segments) > 0 {
-					blocks = append(blocks, Block{Type: "paragraph", Text: &BlockText{Segments: segments}})
+					blocks = append(blocks, map[string]interface{}{
+						"type": "paragraph",
+						"text": map[string]interface{}{
+							"segments": segments,
+						},
+					})
 				} else {
-					blocks = append(blocks, Block{Type: "paragraph", Text: &BlockText{Text: para}})
+					blocks = append(blocks, map[string]interface{}{
+						"type": "paragraph",
+						"text": map[string]interface{}{
+							"text": para,
+						},
+					})
 				}
 			}
 
-			// Footer notice Block
-			blocks = append(blocks, Block{
-				Type: "paragraph",
-				Text: &BlockText{
-					Segments: []TextSegment{
-						{Text: "📰 Originally published on "},
-						{Type: "url", Text: "Kenyans.co.ke", URL: fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug)},
+			// 4. Footer notice Block
+			blocks = append(blocks, map[string]interface{}{
+				"type": "paragraph",
+				"text": map[string]interface{}{
+					"segments": []map[string]interface{}{
+						{"text": "📰 Originally published on "},
+						{
+							"type": "url",
+							"text": "Kenyans.co.ke",
+							"url":  fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
+						},
 					},
 				},
 			})
 
-			// Send Rich Message
-			reqBody := SendRichMessageReq{
-				ChatID: chatID,
+			// Assemble Rich Message payload
+			reqBody := map[string]interface{}{
+				"chat_id": chatID,
+				"rich_message": map[string]interface{}{
+					"blocks": blocks,
+				},
 			}
-			reqBody.RichMessage.Blocks = blocks
 
 			tgURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendRichMessage", token)
 			sendJSON(tgURL, reqBody)
 
 			markPublished(collection, kvKey)
-			time.Sleep(1 * time.Second) // Rate limit buffer
+			time.Sleep(3100 * time.Millisecond) // Rate limit buffer
 		}
 	}
 }
@@ -301,7 +295,6 @@ func sendJSON(url string, payload interface{}) {
 	defer resp.Body.Close()
 	
 	if resp.StatusCode >= 400 {
-		// Read the exact error message from Telegram's response
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("Telegram API Error: Status %d, Details: %s", resp.StatusCode, string(respBody))
 	}
