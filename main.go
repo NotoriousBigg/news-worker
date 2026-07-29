@@ -376,13 +376,16 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 
 		// Images
 		seen := make(map[string]bool)
+		var photoBlocks []map[string]interface{}
 
 		addPhoto := func(url string) {
 			if url == "" || seen[url] {
 				return
 			}
+
 			seen[url] = true
-			blocks = append(blocks, map[string]interface{}{
+
+			photoBlocks = append(photoBlocks, map[string]interface{}{
 				"type": "photo",
 				"photo": map[string]interface{}{
 					"media": url,
@@ -394,6 +397,12 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 
 		for _, img := range fullArticle.Images {
 			addPhoto(img)
+		}
+		if len(photoBlocks) > 0 {
+			blocks = append(blocks, map[string]interface{}{
+				"type":   "slideshow",
+				"blocks": photoBlocks,
+			})
 		}
 
 		// Paragraphs
