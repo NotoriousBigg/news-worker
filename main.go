@@ -372,7 +372,6 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			"type":     "heading",
 			"size":     1,
 			"text":     richHeadline.Text,
-			"entities": richHeadline.Entities,
 		})
 
 		// Images
@@ -386,7 +385,7 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			blocks = append(blocks, map[string]interface{}{
 				"type": "photo",
 				"photo": map[string]interface{}{
-					"url": url,
+					"media": url,
 				},
 			})
 		}
@@ -410,7 +409,6 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 			blocks = append(blocks, map[string]interface{}{
 				"type":     "paragraph",
 				"text":     richPara.Text,
-				"entities": richPara.Entities,
 			})
 		}
 
@@ -428,14 +426,12 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		blocks = append(blocks, map[string]interface{}{
 			"type":     "footer",
 			"text":     footerText,
-			"entities": footerEntities,
 		})
 
 		reqBody := map[string]interface{}{
 			"chat_id": chatID,
 			"rich_message": map[string]interface{}{
 				"blocks": blocks,
-				"skip_entity_detection": true,
 			},
 		}
 
