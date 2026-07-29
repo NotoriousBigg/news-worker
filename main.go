@@ -139,10 +139,14 @@ func htmlToRichText(htmlText string) RichTextResult {
 
 	extractTextAndEntities(root, &textBuilder, &entities, nil)
 
-	return RichTextResult{
-		Text:     textBuilder.String(),
-		Entities: entities,
-	}
+	if entities == nil {
+        entities = []RichTextEntity{}
+    }
+    
+    return RichTextResult{
+        Text:     textBuilder.String(),
+        Entities: entities,
+    }
 }
 
 // entityStack tracks active formatting entities
