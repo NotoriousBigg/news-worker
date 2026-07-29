@@ -414,14 +414,14 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 
 		// Footer
 		footerText := "📰 Originally published on Kenyans.co.ke"
-		footerEntities := []RichTextEntity{
-			{
-				Type:   "text_link",
-				Offset: 29,
-				Length: 13,
-				URL:    fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
-			},
-		}
+		// footerEntities := []RichTextEntity{
+		// 	{
+		// 		Type:   "text_link",
+		// 		Offset: 29,
+		// 		Length: 13,
+		// 		URL:    fmt.Sprintf("https://www.kenyans.co.ke/news/%s", slug),
+		// 	},
+		// }
 
 		blocks = append(blocks, map[string]interface{}{
 			"type":     "footer",
