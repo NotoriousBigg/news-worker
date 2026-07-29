@@ -375,35 +375,35 @@ func processNews(collection *mongo.Collection, token, chatID string) {
 		})
 
 		// Images
-		seen := make(map[string]bool)
-		var photoBlocks []map[string]interface{}
+		// seen := make(map[string]bool)
+		// var photoBlocks []map[string]interface{}
 
-		addPhoto := func(url string) {
-			if url == "" || seen[url] {
-				return
-			}
+		// addPhoto := func(url string) {
+		// 	if url == "" || seen[url] {
+		// 		return
+		// 	}
 
-			seen[url] = true
+		// 	seen[url] = true
 
-			photoBlocks = append(photoBlocks, map[string]interface{}{
-				"type": "photo",
-				"photo": map[string]interface{}{
-					"media": url,
-				},
-			})
-		}
+		// 	photoBlocks = append(photoBlocks, map[string]interface{}{
+		// 		"type": "photo",
+		// 		"photo": map[string]interface{}{
+		// 			"media": url,
+		// 		},
+		// 	})
+		// }
 
-		addPhoto(article.Thumbnail)
+		// addPhoto(article.Thumbnail)
 
-		for _, img := range fullArticle.Images {
-			addPhoto(img)
-		}
-		if len(photoBlocks) > 0 {
-			blocks = append(blocks, map[string]interface{}{
-				"type":   "slideshow",
-				"blocks": photoBlocks,
-			})
-		}
+		// for _, img := range fullArticle.Images {
+		// 	addPhoto(img)
+		// }
+		// if len(photoBlocks) > 0 {
+		// 	blocks = append(blocks, map[string]interface{}{
+		// 		"type":   "slideshow",
+		// 		"blocks": photoBlocks,
+		// 	})
+		// }
 
 		// Paragraphs
 		paragraphs := strings.Split(fullArticle.Content, "\n\n")
